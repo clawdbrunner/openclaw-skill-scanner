@@ -22,6 +22,7 @@ fi
 
 CRITICAL_COUNT=0
 WARNING_COUNT=0
+VT_SCANNED=""
 
 # Clawdex API check - mandatory remote verification
 check_clawdex() {
@@ -114,6 +115,140 @@ check_pattern() {
     return 1
 }
 
+# VirusTotal API scan
+check_virustotal() {
+    local skill_path="$1"
+    local api_key=""
+
+    # Try env var first, then config file
+    if [ -n "${VIRUSTOTAL_API_KEY:-}" ]; then
+        api_key="$VIRUSTOTAL_API_KEY"
+    elif [ -f "$HOME/.config/openclaw-skill-scanner/virustotal.key" ]; then
+        api_key=$(tr -d '[:space:]' < "$HOME/.config/openclaw-skill-scanner/virustotal.key")
+    fi
+
+    if [ -z "$api_key" ]; then
+        echo -e "${YELLOW}⚠️  VirusTotal: Skipped (no API key set)${NC}"
+        echo ""
+        VT_SCANNED="nokey"
+        return 0
+    fi
+
+    echo -e "${BLUE}🔍 VirusTotal: Scanning suspicious files...${NC}"
+    echo ""
+
+    # Collect suspicious files (by extension and executable permission)
+    local tmpfile
+    tmpfile=$(mktemp)
+    find "$skill_path" -type f \( \
+        -name "*.sh" -o -name "*.py" -o -name "*.js" -o -name "*.ts" \
+        -o -name "*.exe" -o -name "*.dll" -o -name "*.so" -o -name "*.dylib" \
+    \) 2>/dev/null >> "$tmpfile"
+    # Add files with executable permission (macOS: +111, GNU: /111)
+    find "$skill_path" -type f -perm +111 2>/dev/null >> "$tmpfile" || \
+        find "$skill_path" -type f -perm /111 2>/dev/null >> "$tmpfile"
+
+    # Deduplicate
+    local -a files=()
+    while IFS= read -r file; do
+        [ -n "$file" ] && files+=("$file")
+    done < <(sort -u "$tmpfile")
+    rm -f "$tmpfile"
+
+    if [ ${#files[@]} -eq 0 ]; then
+        echo -e "${GREEN}   No suspicious file types found${NC}"
+        echo ""
+        VT_SCANNED="0"
+        return 0
+    fi
+
+    local max_files=10
+    local count=0
+    local api_calls=0
+
+    for file in "${files[@]}"; do
+        if [ $count -ge $max_files ]; then
+            echo -e "${YELLOW}   (capped at $max_files files)${NC}"
+            break
+        fi
+
+        # Rate limiting: sleep 15s between API calls (free tier = 4 req/min)
+        if [ $api_calls -gt 0 ]; then
+            sleep 15
+        fi
+
+        local filename
+        filename=$(basename "$file")
+        local hash
+        hash=$(shasum -a 256 "$file" | awk '{print $1}')
+
+        # Query VirusTotal v3 API
+        local response http_code body
+        response=$(curl -s -w "\n%{http_code}" \
+            -H "x-apikey: $api_key" \
+            "https://www.virustotal.com/api/v3/files/$hash" 2>/dev/null || echo -e "\n000")
+        http_code=$(echo "$response" | tail -n1)
+        body=$(echo "$response" | sed '$d')
+        ((api_calls++)) || true
+
+        if [ "$http_code" = "000" ]; then
+            echo -e "${YELLOW}   ⚠️  $filename: API unavailable${NC}"
+            echo ""
+            VT_SCANNED="unavailable"
+            return 0
+        elif [ "$http_code" = "404" ]; then
+            # Hash unknown — upload file if under 32MB
+            local file_size
+            file_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
+            if [ "$file_size" -lt 33554432 ]; then
+                sleep 15
+                response=$(curl -s -w "\n%{http_code}" \
+                    -H "x-apikey: $api_key" \
+                    -F "file=@$file" \
+                    "https://www.virustotal.com/api/v3/files" 2>/dev/null || echo -e "\n000")
+                http_code=$(echo "$response" | tail -n1)
+                ((api_calls++)) || true
+
+                if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
+                    echo -e "${YELLOW}   ⏳ $filename: Uploaded for analysis (check back later)${NC}"
+                else
+                    echo -e "${YELLOW}   ⚠️  $filename: Upload failed (HTTP $http_code)${NC}"
+                fi
+            else
+                echo -e "${YELLOW}   ⚠️  $filename: Too large to upload (>32MB)${NC}"
+            fi
+            ((count++)) || true
+            continue
+        elif [ "$http_code" != "200" ]; then
+            echo -e "${YELLOW}   ⚠️  $filename: API error (HTTP $http_code)${NC}"
+            ((count++)) || true
+            continue
+        fi
+
+        # Parse last_analysis_stats from response
+        local malicious suspicious
+        malicious=$(echo "$body" | grep -o '"malicious":[0-9]*' | head -1 | cut -d: -f2)
+        suspicious=$(echo "$body" | grep -o '"suspicious":[0-9]*' | head -1 | cut -d: -f2)
+        malicious=${malicious:-0}
+        suspicious=${suspicious:-0}
+
+        if [ "$malicious" -gt 0 ] 2>/dev/null; then
+            echo -e "${RED}   🚨 $filename: MALICIOUS ($malicious detections)${NC}"
+            ((CRITICAL_COUNT++)) || true
+        elif [ "$suspicious" -gt 0 ] 2>/dev/null; then
+            echo -e "${YELLOW}   ⚠️  $filename: Suspicious ($suspicious detections)${NC}"
+            ((WARNING_COUNT++)) || true
+        else
+            echo -e "${GREEN}   ✅ $filename: Clean${NC}"
+        fi
+
+        ((count++)) || true
+    done
+
+    echo ""
+    VT_SCANNED="$count"
+}
+
 scan_skill() {
     local skill_path="$1"
     local skill_name=$(basename "$skill_path")
@@ -145,7 +280,10 @@ scan_skill() {
     check_pattern "WARNING" "Urgent/critical warnings" 'CRITICAL REQUIREMENT|MUST DOWNLOAD|REQUIRED.*BEFORE|⚠️.*CRITICAL' "$skill_path" || true
     check_pattern "WARNING" "Password for archive" 'password.*zip|zip.*password|extract.*password' "$skill_path" || true
     check_pattern "WARNING" "Known malicious authors" 'aslaep123|zaycv|gpaitai|lvy19811120-gif|danman60|keepcold131|Aslaep123' "$skill_path" || true
-    
+
+    # Step 3: VirusTotal scan
+    check_virustotal "$skill_path"
+
     # Summary
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     if [ $CRITICAL_COUNT -gt 0 ]; then
@@ -159,6 +297,13 @@ scan_skill() {
         echo "   Clawdex: Checked"
         echo "   Local scan: No red flags detected"
         echo "   Skill appears safe (still review manually)"
+    fi
+    if [ "$VT_SCANNED" = "nokey" ]; then
+        echo "   VirusTotal: Skipped (no API key)"
+    elif [ "$VT_SCANNED" = "unavailable" ]; then
+        echo "   VirusTotal: Skipped (API unavailable)"
+    elif [ -n "$VT_SCANNED" ]; then
+        echo "   VirusTotal: Checked ($VT_SCANNED files)"
     fi
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
@@ -176,10 +321,11 @@ if [ "$1" = "--all" ]; then
                 scan_skill "$skill"
                 CRITICAL_COUNT=0
                 WARNING_COUNT=0
+                VT_SCANNED=""
             fi
         done
     fi
-    
+
     # Scan local skills
     if [ -d "$HOME/clawd/skills" ]; then
         for skill in "$HOME/clawd/skills"/*/; do
@@ -187,6 +333,7 @@ if [ "$1" = "--all" ]; then
                 scan_skill "$skill"
                 CRITICAL_COUNT=0
                 WARNING_COUNT=0
+                VT_SCANNED=""
             fi
         done
     fi
