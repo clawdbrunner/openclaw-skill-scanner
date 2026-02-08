@@ -14,6 +14,7 @@ This tool scans skill folders for malicious patterns before you install or execu
    - Raw IP downloads
    - Known malicious filenames
    - Suspicious ZIP/password patterns
+3. **VirusTotal Scan** — Checks file hashes against VirusTotal's malware database (70+ AV engines)
 
 ## Installation
 
@@ -55,6 +56,50 @@ scan-skill --all
 
 This scans both bundled skills (`/opt/homebrew/lib/node_modules/clawdbot/skills`) and custom skills (`~/clawd/skills`).
 
+## VirusTotal Integration
+
+The scanner can optionally check files against [VirusTotal](https://www.virustotal.com/), which aggregates results from 70+ antivirus engines.
+
+### Setup
+
+Provide your API key via environment variable or config file:
+
+```bash
+# Option 1: Environment variable
+export VIRUSTOTAL_API_KEY="your-api-key-here"
+
+# Option 2: Config file
+mkdir -p ~/.config/openclaw-skill-scanner
+echo "your-api-key-here" > ~/.config/openclaw-skill-scanner/virustotal.key
+```
+
+Get a free API key at https://www.virustotal.com/gui/join-us.
+
+### How It Works
+
+- Scans files with suspicious extensions: `.sh`, `.py`, `.js`, `.ts`, `.exe`, `.dll`, `.so`, `.dylib`, plus any file with executable permissions
+- Computes SHA-256 hash and queries VirusTotal for known results
+- If a file hash is unknown, uploads the file for analysis (files under 32MB only)
+- Reports malicious/suspicious detection counts from AV engines
+
+### Rate Limits
+
+- **Free tier**: 4 requests/minute — the scanner sleeps 15 seconds between API calls
+- **File cap**: Maximum 10 files per scan to avoid excessive API usage
+- If no API key is configured, the VirusTotal step is skipped with a warning (all other checks still run)
+
+### Example Output
+
+```
+🔍 VirusTotal: Scanning suspicious files...
+
+   ✅ install.sh: Clean
+   🚨 payload.exe: MALICIOUS (47 detections)
+   ⚠️  helper.py: Suspicious (3 detections)
+   ⏳ newscript.js: Uploaded for analysis (check back later)
+   (capped at 10 files)
+```
+
 ## Exit Codes
 
 | Code | Meaning |
@@ -74,7 +119,14 @@ This scans both bundled skills (`/opt/homebrew/lib/node_modules/clawdbot/skills`
    └── unknown/error → continue to step 2 (with warning)
 
 2. Local deep scan (pattern matching)
-   └── Exit 0 or 1 based on findings
+   └── Flags critical/warning patterns
+
+3. VirusTotal scan (if API key configured)
+   ├── Hash lookup for each suspicious file
+   ├── Upload unknown files (<32MB) for analysis
+   └── Report malicious/suspicious detections
+
+4. Summary → Exit 0 or 1 based on findings
 ```
 
 ### Defense in Depth
