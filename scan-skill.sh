@@ -24,23 +24,23 @@ CRITICAL_COUNT=0
 WARNING_COUNT=0
 VT_SCANNED=""
 CLAMAV_SCANNED=""
-PI_SCANNED=""
+LF_SCANNED=""
 
 # Clawdex API check - mandatory remote verification
 check_clawdex() {
     local skill_name="$1"
     local api_url="https://clawdex.koi.security/api/skill/${skill_name}"
-    
+
     echo -e "${BLUE}🔍 Checking Clawdex database...${NC}"
-    
+
     local response
     local http_code
-    
+
     # Make API request, capture both response body and HTTP code
     response=$(curl -s -w "\n%{http_code}" "$api_url" 2>/dev/null || echo -e "\n000")
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
-    
+
     if [ "$http_code" = "000" ]; then
         echo -e "${YELLOW}⚠️  Clawdex API unavailable (network error)${NC}"
         echo "    Falling back to local scan only..."
@@ -57,18 +57,18 @@ check_clawdex() {
         echo ""
         return 1
     fi
-    
+
     # Parse verdict from response
     local verdict
     verdict=$(echo "$body" | grep -o '"verdict":"[^"]*"' | cut -d'"' -f4)
-    
+
     if [ -z "$verdict" ]; then
         echo -e "${YELLOW}⚠️  Clawdex: Could not parse verdict${NC}"
         echo "    Proceeding with local deep scan..."
         echo ""
         return 1
     fi
-    
+
     case "$verdict" in
         "malicious")
             echo -e "${RED}🚨 Clawdex: MALICIOUS${NC}"
@@ -100,7 +100,7 @@ check_pattern() {
     local description="$2"
     local pattern="$3"
     local path="$4"
-    
+
     if grep -rqE "$pattern" "$path" 2>/dev/null; then
         if [ "$level" = "CRITICAL" ]; then
             echo -e "${RED}🚨 CRITICAL:${NC} $description"
@@ -199,7 +199,7 @@ check_virustotal() {
             VT_SCANNED="unavailable"
             return 0
         elif [ "$http_code" = "404" ]; then
-            # Hash unknown — upload file if under 32MB
+            # Hash unknown - upload file if under 32MB
             local file_size
             file_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
             if [ "$file_size" -lt 33554432 ]; then
@@ -289,77 +289,76 @@ check_clamav() {
     fi
 }
 
-check_prompt_injection() {
+check_llamafirewall() {
     local skill_path="$1"
-    local helper="$HOME/clawd/projects/openclaw-skill-scanner/scan-prompt-injection.py"
-
-    if [ ! -f "$helper" ]; then
-        echo -e "${YELLOW}⚠️  Prompt Injection: Skipped (helper script not found)${NC}"
-        echo ""
-        PI_SCANNED="nohelper"
-        return 0
-    fi
-
+    local helper="$HOME/clawd/projects/openclaw-skill-scanner/scan-llamafirewall.py"
+    
     if ! command -v python3 &>/dev/null; then
-        echo -e "${YELLOW}⚠️  Prompt Injection: Skipped (python3 not found)${NC}"
+        echo -e "${YELLOW}⚠️  ML Scan: Skipped (python3 not found)${NC}"
         echo ""
-        PI_SCANNED="nopython"
+        LF_SCANNED="nopython"
         return 0
     fi
-
-    echo -e "${BLUE}🔍 Prompt Injection: Scanning text files...${NC}"
-
-    local pi_output
-    pi_output=$(python3 "$helper" "$skill_path" 2>/dev/null)
-
+    
+    if [ ! -f "$helper" ]; then
+        echo -e "${YELLOW}⚠️  ML Scan: Skipped (helper script not found)${NC}"
+        echo ""
+        LF_SCANNED="nohelper"
+        return 0
+    fi
+    
+    echo -e "${BLUE}🔍 ML Scan: Scanning text files for injection patterns...${NC}"
+    
+    local lf_output
+    lf_output=$(python3 "$helper" "$skill_path" 2>/dev/null)
+    
     if [ $? -ne 0 ]; then
         echo -e "${YELLOW}   ⚠️  Scan error (python3 failed)${NC}"
         echo ""
-        PI_SCANNED="error"
+        LF_SCANNED="error"
         return 0
     fi
-
+    
     local files_scanned
-    files_scanned=$(echo "$pi_output" | grep "^FILES_SCANNED=" | cut -d= -f2)
+    files_scanned=$(echo "$lf_output" | grep "^FILES_SCANNED=" | cut -d= -f2)
     local findings_count
-    findings_count=$(echo "$pi_output" | grep "^FINDINGS=" | cut -d= -f2)
-
+    findings_count=$(echo "$lf_output" | grep "^FINDINGS=" | cut -d= -f2)
+    
     files_scanned=${files_scanned:-0}
     findings_count=${findings_count:-0}
-
+    
     echo "   Scanned $files_scanned text files"
-
+    
     if [ "$findings_count" -gt 0 ] 2>/dev/null; then
-        echo -e "${RED}   🚨 PROMPT INJECTION DETECTED (${findings_count} files):${NC}"
-        echo "$pi_output" | grep "^FINDING" | while IFS=$'\t' read -r _ severity file reasons; do
+        echo -e "${RED}   🚨 INJECTION PATTERNS DETECTED (${findings_count} files):${NC}"
+        echo "$lf_output" | grep "^FINDING" | while IFS=$'\t' read -r _ severity file reasons; do
             echo -e "      ${RED}$severity${NC}: $file ($reasons)"
         done
         echo ""
-        # Each HIGH/CRITICAL finding is a warning (not critical — it's the skill's own content)
         ((WARNING_COUNT += findings_count)) || true
-        PI_SCANNED="flagged"
+        LF_SCANNED="flagged"
     else
         echo -e "${GREEN}   ✅ No injection patterns detected${NC}"
         echo ""
-        PI_SCANNED="clean"
+        LF_SCANNED="clean"
     fi
 }
 
 scan_skill() {
     local skill_path="$1"
     local skill_name=$(basename "$skill_path")
-    
+
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "Scanning: $skill_name"
     echo "Path: $skill_path"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    
+
     # Step 1: Mandatory Clawdex remote check
     check_clawdex "$skill_name" || true
-    
+
     # Step 2: Local deep scan (defense in depth)
-    
+
     # Critical patterns
     check_pattern "CRITICAL" "Base64 decode command" "base64 -[dD]|base64 --decode" "$skill_path" || true
     check_pattern "CRITICAL" "Raw IP address in command" '\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b.*(curl|wget|bash|sh)|(curl|wget|bash|sh).*\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b' "$skill_path" || true
@@ -368,8 +367,8 @@ scan_skill() {
     check_pattern "CRITICAL" "Curl piped to shell" 'curl[^|]*\|[[:space:]]*(ba)?sh|wget[^|]*\|[[:space:]]*(ba)?sh' "$skill_path" || true
     check_pattern "CRITICAL" "Download and execute pattern" 'curl.*-[oO].*&&.*chmod.*\+x.*&&.*\./' "$skill_path" || true
     check_pattern "CRITICAL" "Known malicious filenames" 'dx2w5j5bka6qkwxi|6x8c0trkp4l9uugo|AuthTool\.exe|PolymarketAuthTool' "$skill_path" || true
-    
-    # Warning patterns  
+
+    # Warning patterns
     check_pattern "WARNING" "ZIP file download" '\.zip\b' "$skill_path" || true
     check_pattern "WARNING" "GitHub user releases download" 'github\.com/[^/]+/[^/]+/releases/download' "$skill_path" || true
     check_pattern "WARNING" "chmod +x on variable/download" 'chmod \+x.*\$|chmod \+x.*curl|chmod \+x.*wget' "$skill_path" || true
@@ -383,8 +382,8 @@ scan_skill() {
     # Step 4: ClamAV malware scan
     check_clamav "$skill_path"
 
-    # Step 5: Prompt injection detection
-    check_prompt_injection "$skill_path"
+    # Step 5: LlamaFirewall ML scan
+    check_llamafirewall "$skill_path"
 
     # Summary
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -414,12 +413,12 @@ scan_skill() {
     elif [ "$CLAMAV_SCANNED" = "infected" ]; then
         echo "   ClamAV: MALWARE DETECTED"
     fi
-    if [ "$PI_SCANNED" = "nohelper" ] || [ "$PI_SCANNED" = "nopython" ]; then
-        echo "   Prompt Injection: Skipped"
-    elif [ "$PI_SCANNED" = "clean" ]; then
-        echo "   Prompt Injection: Clean"
-    elif [ "$PI_SCANNED" = "flagged" ]; then
-        echo "   Prompt Injection: Flagged"
+    if [ "$LF_SCANNED" = "nopython" ] || [ "$LF_SCANNED" = "nohelper" ]; then
+        echo "   ML Scan: Skipped"
+    elif [ "$LF_SCANNED" = "clean" ]; then
+        echo "   ML Scan: Clean"
+    elif [ "$LF_SCANNED" = "flagged" ]; then
+        echo "   ML Scan: Flagged"
     fi
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
@@ -429,7 +428,7 @@ scan_skill() {
 if [ "$1" = "--all" ]; then
     echo "Scanning all local skills..."
     echo ""
-    
+
     # Scan bundled skills
     if [ -d "/opt/homebrew/lib/node_modules/clawdbot/skills" ]; then
         for skill in /opt/homebrew/lib/node_modules/clawdbot/skills/*/; do
@@ -439,7 +438,7 @@ if [ "$1" = "--all" ]; then
                 WARNING_COUNT=0
                 VT_SCANNED=""
                 CLAMAV_SCANNED=""
-                PI_SCANNED=""
+                LF_SCANNED=""
             fi
         done
     fi
@@ -453,7 +452,7 @@ if [ "$1" = "--all" ]; then
                 WARNING_COUNT=0
                 VT_SCANNED=""
                 CLAMAV_SCANNED=""
-                PI_SCANNED=""
+                LF_SCANNED=""
             fi
         done
     fi
