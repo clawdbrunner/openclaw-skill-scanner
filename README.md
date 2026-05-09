@@ -2,7 +2,7 @@
 
 A security scanner for AI agent skills that performs **5-layer defense-in-depth** verification — from remote threat databases to ML-powered prompt injection detection.
 
-Designed for [OpenClaw](https://github.com/openclaw/openclaw) but works with any skill/plugin system — [Hermes Agent](https://github.com/HermesAgent), custom harnesses, or plain directories of scripts. If it's a folder of files an AI agent might execute, this scanner can check it.
+Designed for [OpenClaw](https://github.com/openclaw/openclaw) but works with any skill/plugin system — [Hermes Agent](https://github.com/NousResearch/hermes-agent), custom harnesses, or plain directories of scripts. If it's a folder of files an AI agent might execute, this scanner can check it.
 
 ## What It Does
 
