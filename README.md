@@ -1,10 +1,12 @@
 # 🔍 OpenClaw Skill Scanner
 
-A security scanner for [OpenClaw](https://github.com/openclaw/openclaw) skills that performs **5-layer defense-in-depth** verification — from remote threat databases to ML-powered prompt injection detection.
+A security scanner for AI agent skills that performs **5-layer defense-in-depth** verification — from remote threat databases to ML-powered prompt injection detection.
+
+Designed for [OpenClaw](https://github.com/openclaw/openclaw) but works with any skill/plugin system — [Hermes Agent](https://github.com/HermesAgent), custom harnesses, or plain directories of scripts. If it's a folder of files an AI agent might execute, this scanner can check it.
 
 ## What It Does
 
-Scans skill folders for malicious patterns before you install or execute them. Five independent layers:
+Scans skill/plugin folders for malicious patterns before you install or execute them. Works with OpenClaw skills, Hermes Agent plugins, or any directory of agent-executable code.
 
 | # | Layer | What It Catches |
 |---|-------|----------------|
