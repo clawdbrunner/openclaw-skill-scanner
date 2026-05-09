@@ -15,10 +15,14 @@ def load_model():
     import torch
 
     model_name = "protectai/deberta-v3-base-prompt-injection"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name)
-    model.eval()
-    return tokenizer, model
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        model.eval()
+        return tokenizer, model
+    except Exception as e:
+        print(f"ERROR=model_load_failed: {e}")
+        sys.exit(1)
 
 
 def predict(text, tokenizer, model):
@@ -45,7 +49,7 @@ def scan_directory(directory):
             fpath = os.path.join(root, fname)
             try:
                 with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                    content = f.read(65536)  # Cap at 64KB
                 if not content.strip():
                     continue
                 files_scanned += 1

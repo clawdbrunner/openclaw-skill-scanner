@@ -265,8 +265,13 @@ check_clamav() {
     echo -e "${BLUE}🔍 ClamAV: Scanning for malware...${NC}"
 
     local clam_output
-    clam_output=$(clamscan --infected --no-summary --recursive "$skill_path" 2>&1)
+    clam_output=$(clamscan --infected --no-summary --recursive "$skill_path" 2>&1) || true
     local clam_exit=$?
+
+    # Re-derive exit code from output (since || true resets it)
+    if echo "$clam_output" | grep -q "FOUND"; then
+        clam_exit=1
+    fi
 
     if [ $clam_exit -eq 0 ]; then
         # No infections found
@@ -275,10 +280,12 @@ check_clamav() {
         CLAMAV_SCANNED="clean"
     elif [ $clam_exit -eq 1 ]; then
         # Infection found!
-        echo -e "${RED}   🚨 MALWARE DETECTED:${NC}"
+        local infected_count
+        infected_count=$(echo "$clam_output" | grep -c "FOUND")
+        echo -e "${RED}   🚨 MALWARE DETECTED (${infected_count} file(s)):${NC}"
         echo "$clam_output" | grep "FOUND" | sed 's/^/   /'
         echo ""
-        ((CRITICAL_COUNT++)) || true
+        ((CRITICAL_COUNT += infected_count)) || true
         CLAMAV_SCANNED="infected"
     else
         # Error (e.g., database issue)
@@ -310,10 +317,20 @@ check_llamafirewall() {
     echo -e "${BLUE}🔍 ML Scan: Scanning text files for injection patterns...${NC}"
     
     local lf_output
-    lf_output=$(python3 "$helper" "$skill_path" 2>/dev/null)
+    lf_output=$(python3 "$helper" "$skill_path" 2>/dev/null) || true
     
-    if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}   ⚠️  Scan error (python3 failed)${NC}"
+    # Check for structured error from Python
+    if echo "$lf_output" | grep -q "^ERROR="; then
+        local err_msg
+        err_msg=$(echo "$lf_output" | grep "^ERROR=" | cut -d= -f2-)
+        echo -e "${YELLOW}   ⚠️  ML Scan error: ${err_msg}${NC}"
+        echo ""
+        LF_SCANNED="error"
+        return 0
+    fi
+    
+    if [ -z "$lf_output" ]; then
+        echo -e "${YELLOW}   ⚠️  Scan error (no output)${NC}"
         echo ""
         LF_SCANNED="error"
         return 0
@@ -331,11 +348,25 @@ check_llamafirewall() {
     
     if [ "$findings_count" -gt 0 ] 2>/dev/null; then
         echo -e "${RED}   🚨 INJECTION PATTERNS DETECTED (${findings_count} files):${NC}"
-        echo "$lf_output" | grep "^FINDING" | while IFS=$'\t' read -r _ severity file reasons; do
+        local crit_count=0
+        local warn_count=0
+        echo "$lf_output" | grep "^FINDING\t" | while IFS=$'\t' read -r _ severity file reasons; do
             echo -e "      ${RED}$severity${NC}: $file ($reasons)"
+            if [ "$severity" = "CRITICAL" ]; then
+                echo "CRITICAL" >> /tmp/sb_findings_$$.tmp
+            else
+                echo "WARNING" >> /tmp/sb_findings_$$.tmp
+            fi
         done
+        # Count severities
+        if [ -f /tmp/sb_findings_$$.tmp ]; then
+            crit_count=$(grep -c "^CRITICAL" /tmp/sb_findings_$$.tmp 2>/dev/null || echo 0)
+            warn_count=$(grep -c "^WARNING" /tmp/sb_findings_$$.tmp 2>/dev/null || echo 0)
+            rm -f /tmp/sb_findings_$$.tmp
+        fi
         echo ""
-        ((WARNING_COUNT += findings_count)) || true
+        ((CRITICAL_COUNT += crit_count)) || true
+        ((WARNING_COUNT += warn_count)) || true
         LF_SCANNED="flagged"
     else
         echo -e "${GREEN}   ✅ No injection patterns detected${NC}"
