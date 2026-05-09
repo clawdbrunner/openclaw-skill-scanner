@@ -348,23 +348,17 @@ check_llamafirewall() {
     
     if [ "$findings_count" -gt 0 ] 2>/dev/null; then
         echo -e "${RED}   🚨 INJECTION PATTERNS DETECTED (${findings_count} files):${NC}"
-        local crit_count=0
-        local warn_count=0
         echo "$lf_output" | grep "^FINDING\t" | while IFS=$'\t' read -r _ severity file reasons; do
             echo -e "      ${RED}$severity${NC}: $file ($reasons)"
-            if [ "$severity" = "CRITICAL" ]; then
-                echo "CRITICAL" >> /tmp/sb_findings_$$.tmp
-            else
-                echo "WARNING" >> /tmp/sb_findings_$$.tmp
-            fi
         done
-        # Count severities
-        if [ -f /tmp/sb_findings_$$.tmp ]; then
-            crit_count=$(grep -c "^CRITICAL" /tmp/sb_findings_$$.tmp 2>/dev/null || echo 0)
-            warn_count=$(grep -c "^WARNING" /tmp/sb_findings_$$.tmp 2>/dev/null || echo 0)
-            rm -f /tmp/sb_findings_$$.tmp
-        fi
         echo ""
+        # Count critical vs high by re-parsing
+        local crit_count=0
+        local warn_count=0
+        crit_count=$(echo "$lf_output" | grep "^FINDING\tCRITICAL\t" | wc -l | tr -d ' ')
+        warn_count=$(echo "$lf_output" | grep "^FINDING\tHIGH\t" | wc -l | tr -d ' ')
+        crit_count=${crit_count:-0}
+        warn_count=${warn_count:-0}
         ((CRITICAL_COUNT += crit_count)) || true
         ((WARNING_COUNT += warn_count)) || true
         LF_SCANNED="flagged"
