@@ -12,10 +12,15 @@ TEXT_EXTENSIONS = {".md", ".txt", ".sh", ".py", ".js", ".ts", ".yaml", ".yml", "
 
 def load_model():
     try:
+        import os
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
-        import torch
 
-        model_name = "protectai/deberta-v3-base-prompt-injection"
+        # Load HF token if available
+        token_path = os.path.expanduser("~/.config/huggingface/token")
+        if os.path.exists(token_path):
+            os.environ.setdefault("HF_TOKEN", open(token_path).read().strip())
+
+        model_name = "meta-llama/Llama-Prompt-Guard-2-86M"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForSequenceClassification.from_pretrained(model_name)
         model.eval()
