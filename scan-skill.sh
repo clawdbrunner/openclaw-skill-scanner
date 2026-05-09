@@ -23,6 +23,8 @@ fi
 CRITICAL_COUNT=0
 WARNING_COUNT=0
 VT_SCANNED=""
+CLAMAV_SCANNED=""
+PI_SCANNED=""
 
 # Clawdex API check - mandatory remote verification
 check_clawdex() {
@@ -249,6 +251,100 @@ check_virustotal() {
     VT_SCANNED="$count"
 }
 
+check_clamav() {
+    local skill_path="$1"
+
+    # Check if clamscan is available
+    if ! command -v clamscan &>/dev/null; then
+        echo -e "${YELLOW}⚠️  ClamAV: Skipped (clamscan not found)${NC}"
+        echo ""
+        CLAMAV_SCANNED="notfound"
+        return 0
+    fi
+
+    echo -e "${BLUE}🔍 ClamAV: Scanning for malware...${NC}"
+
+    local clam_output
+    clam_output=$(clamscan --infected --no-summary --recursive "$skill_path" 2>&1)
+    local clam_exit=$?
+
+    if [ $clam_exit -eq 0 ]; then
+        # No infections found
+        echo -e "${GREEN}   ✅ No malware detected${NC}"
+        echo ""
+        CLAMAV_SCANNED="clean"
+    elif [ $clam_exit -eq 1 ]; then
+        # Infection found!
+        echo -e "${RED}   🚨 MALWARE DETECTED:${NC}"
+        echo "$clam_output" | grep "FOUND" | sed 's/^/   /'
+        echo ""
+        ((CRITICAL_COUNT++)) || true
+        CLAMAV_SCANNED="infected"
+    else
+        # Error (e.g., database issue)
+        echo -e "${YELLOW}   ⚠️  ClamAV error (exit $clam_exit)${NC}"
+        echo "$clam_output" | head -3 | sed 's/^/   /'
+        echo ""
+        CLAMAV_SCANNED="error"
+    fi
+}
+
+check_prompt_injection() {
+    local skill_path="$1"
+    local helper="$HOME/clawd/projects/openclaw-skill-scanner/scan-prompt-injection.py"
+
+    if [ ! -f "$helper" ]; then
+        echo -e "${YELLOW}⚠️  Prompt Injection: Skipped (helper script not found)${NC}"
+        echo ""
+        PI_SCANNED="nohelper"
+        return 0
+    fi
+
+    if ! command -v python3 &>/dev/null; then
+        echo -e "${YELLOW}⚠️  Prompt Injection: Skipped (python3 not found)${NC}"
+        echo ""
+        PI_SCANNED="nopython"
+        return 0
+    fi
+
+    echo -e "${BLUE}🔍 Prompt Injection: Scanning text files...${NC}"
+
+    local pi_output
+    pi_output=$(python3 "$helper" "$skill_path" 2>/dev/null)
+
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}   ⚠️  Scan error (python3 failed)${NC}"
+        echo ""
+        PI_SCANNED="error"
+        return 0
+    fi
+
+    local files_scanned
+    files_scanned=$(echo "$pi_output" | grep "^FILES_SCANNED=" | cut -d= -f2)
+    local findings_count
+    findings_count=$(echo "$pi_output" | grep "^FINDINGS=" | cut -d= -f2)
+
+    files_scanned=${files_scanned:-0}
+    findings_count=${findings_count:-0}
+
+    echo "   Scanned $files_scanned text files"
+
+    if [ "$findings_count" -gt 0 ] 2>/dev/null; then
+        echo -e "${RED}   🚨 PROMPT INJECTION DETECTED (${findings_count} files):${NC}"
+        echo "$pi_output" | grep "^FINDING" | while IFS=$'\t' read -r _ severity file reasons; do
+            echo -e "      ${RED}$severity${NC}: $file ($reasons)"
+        done
+        echo ""
+        # Each HIGH/CRITICAL finding is a warning (not critical — it's the skill's own content)
+        ((WARNING_COUNT += findings_count)) || true
+        PI_SCANNED="flagged"
+    else
+        echo -e "${GREEN}   ✅ No injection patterns detected${NC}"
+        echo ""
+        PI_SCANNED="clean"
+    fi
+}
+
 scan_skill() {
     local skill_path="$1"
     local skill_name=$(basename "$skill_path")
@@ -284,6 +380,12 @@ scan_skill() {
     # Step 3: VirusTotal scan
     check_virustotal "$skill_path"
 
+    # Step 4: ClamAV malware scan
+    check_clamav "$skill_path"
+
+    # Step 5: Prompt injection detection
+    check_prompt_injection "$skill_path"
+
     # Summary
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     if [ $CRITICAL_COUNT -gt 0 ]; then
@@ -305,6 +407,20 @@ scan_skill() {
     elif [ -n "$VT_SCANNED" ]; then
         echo "   VirusTotal: Checked ($VT_SCANNED files)"
     fi
+    if [ "$CLAMAV_SCANNED" = "notfound" ]; then
+        echo "   ClamAV: Skipped (not installed)"
+    elif [ "$CLAMAV_SCANNED" = "clean" ]; then
+        echo "   ClamAV: Clean"
+    elif [ "$CLAMAV_SCANNED" = "infected" ]; then
+        echo "   ClamAV: MALWARE DETECTED"
+    fi
+    if [ "$PI_SCANNED" = "nohelper" ] || [ "$PI_SCANNED" = "nopython" ]; then
+        echo "   Prompt Injection: Skipped"
+    elif [ "$PI_SCANNED" = "clean" ]; then
+        echo "   Prompt Injection: Clean"
+    elif [ "$PI_SCANNED" = "flagged" ]; then
+        echo "   Prompt Injection: Flagged"
+    fi
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 }
@@ -322,6 +438,8 @@ if [ "$1" = "--all" ]; then
                 CRITICAL_COUNT=0
                 WARNING_COUNT=0
                 VT_SCANNED=""
+                CLAMAV_SCANNED=""
+                PI_SCANNED=""
             fi
         done
     fi
@@ -334,6 +452,8 @@ if [ "$1" = "--all" ]; then
                 CRITICAL_COUNT=0
                 WARNING_COUNT=0
                 VT_SCANNED=""
+                CLAMAV_SCANNED=""
+                PI_SCANNED=""
             fi
         done
     fi
