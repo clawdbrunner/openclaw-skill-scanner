@@ -11,11 +11,11 @@ TEXT_EXTENSIONS = {".md", ".txt", ".sh", ".py", ".js", ".ts", ".yaml", ".yml", "
 
 
 def load_model():
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
-    import torch
-
-    model_name = "protectai/deberta-v3-base-prompt-injection"
     try:
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        import torch
+
+        model_name = "protectai/deberta-v3-base-prompt-injection"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForSequenceClassification.from_pretrained(model_name)
         model.eval()
@@ -26,8 +26,8 @@ def load_model():
 
 
 def predict(text, tokenizer, model):
-    import torch
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    import torch
     with torch.no_grad():
         logits = model(**inputs).logits
     probs = torch.softmax(logits, dim=-1)
@@ -35,8 +35,6 @@ def predict(text, tokenizer, model):
 
 
 def scan_directory(directory):
-    import torch
-
     tokenizer, model = load_model()
     findings = []
     files_scanned = 0
