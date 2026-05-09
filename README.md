@@ -1,37 +1,37 @@
 # 🔍 OpenClaw Skill Scanner
 
-A security scanner for [OpenClaw](https://github.com/openclaw/openclaw) (formerly Clawdbot/Moltbot) skills that performs **defense-in-depth** verification using both remote (Clawdex) and local pattern analysis.
+A security scanner for [OpenClaw](https://github.com/openclaw/openclaw) skills that performs **5-layer defense-in-depth** verification — from remote threat databases to ML-powered prompt injection detection.
 
 ## What It Does
 
-This tool scans skill folders for malicious patterns before you install or execute them. It combines:
+Scans skill folders for malicious patterns before you install or execute them. Five independent layers:
 
-1. **Remote Check (Clawdex)** — Queries the [Clawdex security database](https://clawdex.koi.security) for known malicious skills
-2. **Local Scan** — Deep pattern analysis for:
-   - Base64-encoded commands
-   - Curl-to-bash pipes
-   - Gatekeeper bypasses (`xattr -c`)
-   - Raw IP downloads
-   - Known malicious filenames
-   - Suspicious ZIP/password patterns
-3. **VirusTotal Scan** — Checks file hashes against VirusTotal's malware database (70+ AV engines)
+| # | Layer | What It Catches |
+|---|-------|----------------|
+| 1 | **Clawdex Remote Check** | Known malicious skills via [Clawdex](https://clawdex.koi.security) database |
+| 2 | **Local Pattern Scan** | Malware delivery patterns (base64, curl\|bash, gatekeeper bypass, etc.) |
+| 3 | **VirusTotal** | 70+ AV engine scans via hash lookup |
+| 4 | **ClamAV** | Local malware signature scanning |
+| 5 | **ML Injection Scan** | Prompt injection detection via [Meta's Llama-Prompt-Guard-2-86M](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M) |
+
+All layers gracefully skip if their dependencies aren't available. The scanner always completes.
 
 ## Installation
 
 ```bash
 # Clone the repo
-git clone https://github.com/chrisbrunner/openclaw-skill-scanner.git
+git clone https://github.com/clawdbrunner/openclaw-skill-scanner.git
 cd openclaw-skill-scanner
 
-# Make executable and move to your PATH
-chmod +x scan-skill.sh
-sudo mv scan-skill.sh /usr/local/bin/scan-skill
+# Make executable and link to PATH
+chmod +x scan-skill.sh scan-llamafirewall.py
+ln -s $(pwd)/scan-skill.sh /usr/local/bin/scan-skill
 ```
 
-Or just download the script directly:
+Or download directly:
 
 ```bash
-curl -O https://raw.githubusercontent.com/chrisbrunner/openclaw-skill-scanner/main/scan-skill.sh
+curl -O https://raw.githubusercontent.com/clawdbrunner/openclaw-skill-scanner/main/scan-skill.sh
 chmod +x scan-skill.sh
 ```
 
@@ -43,26 +43,51 @@ chmod +x scan-skill.sh
 scan-skill /path/to/skill/folder
 ```
 
-Example:
-```bash
-scan-skill ~/clawd/skills/my-new-skill
-```
-
 ### Scan all local skills
 
 ```bash
 scan-skill --all
 ```
 
-This scans both bundled skills (`/opt/homebrew/lib/node_modules/clawdbot/skills`) and custom skills (`~/clawd/skills`).
+Scans both bundled skills and custom skills (`~/clawd/skills`).
 
-## VirusTotal Integration
+### Example Output
 
-The scanner can optionally check files against [VirusTotal](https://www.virustotal.com/), which aggregates results from 70+ antivirus engines.
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Scanning: my-new-skill
+Path: /path/to/my-new-skill
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-### Setup
+🔍 Checking Clawdex database...
+✅ Clawdex: Benign
 
-Provide your API key via environment variable or config file:
+🔍 VirusTotal: Scanning suspicious files...
+   ✅ install.sh: Clean
+   ✅ helper.py: Clean
+
+🔍 ClamAV: Scanning for malware...
+   ✅ No malware detected
+
+🔍 ML Scan: Scanning text files for injection patterns...
+   Scanned 8 text files
+   ✅ No injection patterns detected
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ RESULT: PASSED
+   Clawdex: Checked
+   Local scan: No red flags detected
+   VirusTotal: Checked (2 files)
+   ClamAV: Clean
+   ML Scan: Clean
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+## Optional Integrations
+
+### VirusTotal
+
+Checks file hashes against VirusTotal's database (70+ AV engines).
 
 ```bash
 # Option 1: Environment variable
@@ -75,70 +100,85 @@ echo "your-api-key-here" > ~/.config/openclaw-skill-scanner/virustotal.key
 
 Get a free API key at https://www.virustotal.com/gui/join-us.
 
-### How It Works
+Rate limits: 4 requests/minute (free tier), max 10 files per scan. Skipped if no API key is configured.
 
-- Scans files with suspicious extensions: `.sh`, `.py`, `.js`, `.ts`, `.exe`, `.dll`, `.so`, `.dylib`, plus any file with executable permissions
-- Computes SHA-256 hash and queries VirusTotal for known results
-- If a file hash is unknown, uploads the file for analysis (files under 32MB only)
-- Reports malicious/suspicious detection counts from AV engines
+### ClamAV
 
-### Rate Limits
+Local malware signature scanning via `clamscan`.
 
-- **Free tier**: 4 requests/minute — the scanner sleeps 15 seconds between API calls
-- **File cap**: Maximum 10 files per scan to avoid excessive API usage
-- If no API key is configured, the VirusTotal step is skipped with a warning (all other checks still run)
-
-### Example Output
-
+Install ClamAV:
+```bash
+# macOS
+brew install clamav
+# Update definitions
+freshclam
 ```
-🔍 VirusTotal: Scanning suspicious files...
 
-   ✅ install.sh: Clean
-   🚨 payload.exe: MALICIOUS (47 detections)
-   ⚠️  helper.py: Suspicious (3 detections)
-   ⏳ newscript.js: Uploaded for analysis (check back later)
-   (capped at 10 files)
+Skipped if `clamscan` is not found.
+
+### ML Injection Scan
+
+Uses [Meta's Llama-Prompt-Guard-2-86M](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M) to detect prompt injection patterns in skill text files. Catches social engineering, instruction manipulation, and novel injection techniques that pattern matching misses.
+
+Requirements:
+- Python 3 with `transformers` and `torch` installed
+- HuggingFace access to `meta-llama/Llama-Prompt-Guard-2-86M` (gated model — request access on HuggingFace)
+
+Setup:
+```bash
+pip install transformers torch
+# Save your HF token
+mkdir -p ~/.config/huggingface
+echo "your-hf-token" > ~/.config/huggingface/token
 ```
+
+Skipped if Python, dependencies, or the helper script aren't available.
 
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| `0` | ✅ Passed — Clawdex + local scan both clean |
-| `1` | ⚠️ Failed — Critical issues found in local scan |
+| `0` | ✅ Passed — All layers clean |
+| `1` | ⚠️ Failed — Critical or warning issues found |
 | `2` | 🚨 Blocked — Skill flagged as malicious by Clawdex |
 
-## How It Works
-
-### Scan Flow
+## Scan Flow
 
 ```
-1. Query Clawdex API (https://clawdex.koi.security/api/skill/{name})
+1. Clawdex Remote Check
    ├── "malicious" → EXIT 2 (blocked immediately)
-   ├── "benign" → continue to step 2
-   └── unknown/error → continue to step 2 (with warning)
+   ├── "benign" → continue
+   └── unknown/error → continue with warning
 
-2. Local deep scan (pattern matching)
-   └── Flags critical/warning patterns
+2. Local Pattern Scan
+   └── Flags critical/warning patterns (malware delivery, obfuscation)
 
-3. VirusTotal scan (if API key configured)
-   ├── Hash lookup for each suspicious file
-   ├── Upload unknown files (<32MB) for analysis
+3. VirusTotal (if API key configured)
+   ├── Hash lookup for suspicious files
+   ├── Upload unknown files for analysis
    └── Report malicious/suspicious detections
 
-4. Summary → Exit 0 or 1 based on findings
+4. ClamAV (if installed)
+   ├── clamscan --infected --recursive
+   └── Report infected files
+
+5. ML Injection Scan (if dependencies available)
+   ├── Scan text files with Llama-Prompt-Guard-2-86M
+   └── Flag files with injection probability ≥ 0.7
+
+6. Summary → Exit 0, 1, or 2
 ```
 
 ### Defense in Depth
 
-Even if Clawdex reports "benign", the local scan **always runs**. This catches:
+Every layer runs independently. Even if Clawdex reports "benign", all subsequent layers still execute. This catches:
 - New threats not yet in Clawdex
 - Supply chain attacks (skill updated after Clawdex review)
-- False negatives from remote scanning
+- Novel prompt injections that pattern matching misses
 
 ### Fail-Open Design
 
-If Clawdex is down or returns an error, the script falls back to local scanning with a warning. This ensures skills can still be scanned even without internet connectivity.
+Missing dependencies (ClamAV, Python, API keys) produce warnings, not errors. The scanner always completes with whatever layers are available.
 
 ## What Gets Flagged
 
@@ -152,6 +192,7 @@ If Clawdex is down or returns an error, the script falls back to local scanning 
 | Raw IP addresses | Bypasses DNS security |
 | Known malicious IPs | Previously identified threats |
 | Known malicious filenames | Documented malware |
+| ML injection score ≥ 0.9 | Likely prompt injection attack |
 
 ### ⚠️ Warnings (Manual Review)
 
@@ -162,6 +203,7 @@ If Clawdex is down or returns an error, the script falls back to local scanning 
 | `chmod +x` on downloads | Making untrusted code executable |
 | "CRITICAL" warnings | Social engineering tactics |
 | Password-protected archives | Hides content from scanning |
+| ML injection score ≥ 0.7 | Possible prompt injection |
 
 ## Background
 
@@ -184,4 +226,5 @@ MIT — Use at your own risk. This tool provides best-effort detection, not a gu
 
 - [OpenClaw](https://github.com/openclaw/openclaw) — The AI agent platform
 - [Clawdex](https://clawdex.koi.security) — Security database for AI agent skills
+- [Llama-Prompt-Guard-2-86M](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M) — Meta's prompt injection classifier
 - [Open Source Malware blog post](https://opensourcemalware.com/blog/clawdbot-skills-ganked-your-crypto) — Details on the original attack
