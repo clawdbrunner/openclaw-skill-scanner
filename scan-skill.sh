@@ -382,14 +382,17 @@ check_raw_ip_commands() {
     local matches=""
     local count=0
     local line
+    local has_disallowed_ip=0
+    local ip
 
     # Only local placeholders are ignored:
     # - 127.0.0.0/8 loopback
     # - 0.0.0.0/32 unspecified bind address, not loopback
     # Private LAN, documentation, and public IPs stay review-worthy.
+    # Note: IPv6 loopback (::1) and hostname "localhost" are out of scope here —
+    # the raw IP regex only matches dotted-quad IPv4, so ::1 is never flagged.
     while IFS= read -r line; do
-        local has_disallowed_ip=0
-        local ip
+        has_disallowed_ip=0
 
         # Check each IP so mixed local + external commands still fail.
         while IFS= read -r ip; do
@@ -400,7 +403,7 @@ check_raw_ip_commands() {
                     break
                     ;;
             esac
-        done < <(printf '%s\n' "$line" | grep -Eo "$ip_pattern" || true)
+        done < <(printf '%s\n' "$line" | grep -Eo "$ip_pattern")
 
         # Show first five offending lines; count this rule once below.
         if [ "$has_disallowed_ip" -eq 1 ]; then
@@ -410,11 +413,13 @@ check_raw_ip_commands() {
                 break
             fi
         fi
-    done < <(grep -rnE "$raw_ip_command_pattern" "$skill_path" 2>/dev/null || true)
+    done < <(grep -rnE "$raw_ip_command_pattern" "$skill_path" 2>/dev/null)
 
     if [ -n "$matches" ]; then
         echo -e "${RED}🚨 CRITICAL:${NC} Raw non-allowlisted IP address in command"
         printf '%s' "$matches" | sed 's/^/   /'
+        # Intentionally increment CRITICAL_COUNT once per pattern (not per line),
+        # consistent with existing check_pattern behavior.
         ((CRITICAL_COUNT++)) || true
         echo ""
         return 0
