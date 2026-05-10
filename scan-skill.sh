@@ -369,6 +369,59 @@ check_llamafirewall() {
     fi
 }
 
+check_raw_ip_commands() {
+    local skill_path="$1"
+
+    # Flag raw-IP fetch/exec commands; report whole lines for reviewer context.
+    local raw_ip_command_pattern='\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b.*(curl|wget|bash|sh)|(curl|wget|bash|sh).*\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b'
+
+    # Keep the original broad dotted-quad match; this change only allowlists
+    # local placeholders, it does not try to become a strict IP parser.
+    local ip_pattern='\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b'
+
+    local matches=""
+    local count=0
+    local line
+
+    # Only local placeholders are ignored:
+    # - 127.0.0.0/8 loopback
+    # - 0.0.0.0/32 unspecified bind address, not loopback
+    # Private LAN, documentation, and public IPs stay review-worthy.
+    while IFS= read -r line; do
+        local has_disallowed_ip=0
+        local ip
+
+        # Check each IP so mixed local + external commands still fail.
+        while IFS= read -r ip; do
+            case "$ip" in
+                127.*|0.0.0.0) ;;
+                *)
+                    has_disallowed_ip=1
+                    break
+                    ;;
+            esac
+        done < <(printf '%s\n' "$line" | grep -Eo "$ip_pattern" || true)
+
+        # Show first five offending lines; count this rule once below.
+        if [ "$has_disallowed_ip" -eq 1 ]; then
+            matches+="${line}"$'\n'
+            ((count++)) || true
+            if [ "$count" -ge 5 ]; then
+                break
+            fi
+        fi
+    done < <(grep -rnE "$raw_ip_command_pattern" "$skill_path" 2>/dev/null || true)
+
+    if [ -n "$matches" ]; then
+        echo -e "${RED}🚨 CRITICAL:${NC} Raw non-allowlisted IP address in command"
+        printf '%s' "$matches" | sed 's/^/   /'
+        ((CRITICAL_COUNT++)) || true
+        echo ""
+        return 0
+    fi
+    return 1
+}
+
 scan_skill() {
     local skill_path="$1"
     local skill_name=$(basename "$skill_path")
@@ -386,7 +439,7 @@ scan_skill() {
 
     # Critical patterns
     check_pattern "CRITICAL" "Base64 decode command" "base64 -[dD]|base64 --decode" "$skill_path" || true
-    check_pattern "CRITICAL" "Raw IP address in command" '\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b.*(curl|wget|bash|sh)|(curl|wget|bash|sh).*\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b' "$skill_path" || true
+    check_raw_ip_commands "$skill_path" || true
     check_pattern "CRITICAL" "Known malicious IP (91.92.242.30)" '91\.92\.242\.30' "$skill_path" || true
     check_pattern "CRITICAL" "Gatekeeper bypass (xattr -c)" 'xattr -[cd]|xattr.*quarantine' "$skill_path" || true
     check_pattern "CRITICAL" "Curl piped to shell" 'curl[^|]*\|[[:space:]]*(ba)?sh|wget[^|]*\|[[:space:]]*(ba)?sh' "$skill_path" || true
